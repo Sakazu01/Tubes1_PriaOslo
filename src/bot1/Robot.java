@@ -47,6 +47,9 @@ public class Robot extends Entity{
      *                   toward the target. each turn, scan() reveals new
      *                   terrain, and BFS is re-attempted so the bot switches
      *                   to an optimal route as soon as the map allows it.
+     * 
+     * @param target     the target location to move to.
+     * @throws GameActionException if the game action fails.
      */
     public void move_to(MapLocation target) throws GameActionException {
         if (rc.getLocation().equals(target)) {
@@ -133,6 +136,10 @@ public class Robot extends Entity{
 
     // ---- DFS exploration ----
 
+    /**
+     * @brief            explore the map using DFS.
+     * @throws GameActionException if the game action fails.
+     */
     private void explore() throws GameActionException {
         Direction dir = rc.getLocation().directionTo(moveTarget);
 
@@ -161,6 +168,12 @@ public class Robot extends Entity{
         }
     }
 
+    /**
+     * @brief            try to move in a given direction.
+     * @param d          the direction to move in.
+     * @return           true if the move was successful.
+     * @throws GameActionException if the game action fails.
+     */
     private boolean tryExploreMove(Direction d) throws GameActionException {
         MapLocation next = rc.getLocation().add(d);
         if (rc.canMove(d) && !exploreVisited.contains(next)) {
@@ -172,6 +185,12 @@ public class Robot extends Entity{
         return false;
     }
 
+    /**
+     * @brief            force move in a given direction.
+     * @param d          the direction to move in.
+     * @return           true if the move was successful.
+     * @throws GameActionException if the game action fails.
+     */
     private boolean forceMove(Direction d) throws GameActionException {
         if (rc.canMove(d)) {
             rc.move(d);
@@ -186,6 +205,7 @@ public class Robot extends Entity{
      * @brief            try forward, diagonal-right, diagonal-left from the heading,
      *                   then rotate left 90 degrees and repeat.
      * @return           true if a move was made.
+     * @throws GameActionException if the game action fails.
      */
     private boolean fallbackMove(Direction dir) throws GameActionException {
         for (int i = 0; i < 4; i++) {
@@ -204,6 +224,8 @@ public class Robot extends Entity{
      *                   any two adjacent tiles that are both non-null and passable
      *                   are implicitly connected -- no explicit edge recording needed.
      *                   aborts early if bytecodes run low to stay within turn budget.
+     * @param start      the starting location.
+     * @param goal       the goal location.
      * @return           ordered list of waypoints (excluding start), or null.
      */
     private LinkedList<MapLocation> bfs(MapLocation start, MapLocation goal) {
@@ -246,6 +268,9 @@ public class Robot extends Entity{
         return null;
     }
 
+    /**
+     * @brief            reset the path state.
+     */
     private void resetPathState() {
         moveTarget = null;
         plannedPath = null;
