@@ -6,4 +6,11 @@ public class Soldier extends Robot {
     public Soldier(RobotController rc){
         super(rc);
     }
+
+    @Override
+    public void run() throws GameActionException {
+        super.run();
+
+        Clock.yield();
+    }
 }

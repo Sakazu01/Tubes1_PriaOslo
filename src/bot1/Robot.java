@@ -5,6 +5,14 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
 
+/**
+ * @brief Mobile entity (Soldier, Mopper, Splasher).
+ *        
+ *        Current version:
+ *        Handles pathfinding (BFS + DFS exploration with fallback protocol),
+ *        the initiator side of the two-way sync protocol with towers, and
+ *        background inline reporting of known landmarks.
+ */
 public class Robot extends Entity{
 
     private MapLocation moveTarget;
@@ -15,43 +23,220 @@ public class Robot extends Entity{
     private HashSet<MapLocation> exploreVisited = new HashSet<>();
     private LinkedList<MapLocation> exploreStack = new LinkedList<>();
 
+    protected boolean standstill = false;
+
+    // tracks which entries have been shared with a tower via sync
+    private int sharedAllyIdx = 0;
+    private int sharedEnemyIdx = 0;
+    private int sharedRuinIdx = 0;
+
+    private int reportCursor = 0;
+
     /**
-     * @brief            constructor.
-     * @param rc         the entity.
+     * @brief            Constructor.
+     * @param rc         The RobotController for this robot.
      */
     public Robot(RobotController rc){
         super(rc);
     }
 
+    /**
+     * @brief            Main turn loop for a robot. Processes incoming
+     *                   messages, scans every 5 turns, drives the sync
+     *                   state machine (or initiates a new sync / sends
+     *                   inline reports when idle), then attempts to move.
+     * @throws GameActionException if a game action fails.
+     */
     @Override
     public void run() throws GameActionException {
-        super.run();
-        move_to(new MapLocation(15, 10));
+        count++;
+
+        processMessages();
+        if(count % 5 == 0) scan();
+
+        if(sync_phase != SYNC_IDLE){
+            handleSyncSend();
+        } else {
+            if(!standstill) tryInitSync();
+            if(!standstill) reportToNearbyTower();
+        }
+
+        move_to(new MapLocation(15,10));
+
+        Clock.yield();
+    }
+
+    // ---- message handling ----
+
+    /**
+     * @brief            Read all pending messages and dispatch them.
+     *                   During an active sync, partner messages are routed
+     *                   to handleSyncMessage().  Otherwise:
+     *                   - Standstill (x100): sets standstill flag.
+     *                   - Resume (x000): clears standstill (when idle).
+     *                   - Inline report (x111): stored via receiveInlineReport().
+     */
+    protected void processMessages(){
+        Message[] messages = rc.readMessages(-1);
+        for(Message m : messages){
+            int data = m.getBytes();
+
+            if(sync_phase != SYNC_IDLE && m.getSenderID() == sync_partner_id){
+                handleSyncMessage(data);
+                continue;
+            }
+
+            if(isStandstill(data)){ standstill = true; continue; }
+            if(isResume(data) && sync_phase == SYNC_IDLE){ standstill = false; continue; }
+            if(isInlineReport(data)){ receiveInlineReport(data); continue; }
+        }
+    }
+
+    // ---- sync initiation (robot as initiator) ----
+
+    /**
+     * @brief            Attempt to start a two-way sync with the nearest
+     *                   ally tower.  Only proceeds when idle and this
+     *                   robot's info is stale (shouldInitSync).  Builds
+     *                   the unshared payload, sets the robot as initiator,
+     *                   and activates standstill for the duration.
+     * @throws GameActionException if senseNearbyRobots fails.
+     */
+    protected void tryInitSync() throws GameActionException {
+        if(sync_phase != SYNC_IDLE || !shouldInitSync()) return;
+
+        RobotInfo[] allies = rc.senseNearbyRobots(-1, rc.getTeam());
+        for(RobotInfo r : allies){
+            if(isTowerType(r.type)){
+                sync_payload = buildSyncPayloadUnshared();
+                sync_target_loc = r.location;
+                sync_partner_id = r.ID;
+                sync_initiator = true;
+                sync_cursor = 0;
+                sync_phase = SYNC_I_H1;
+                standstill = true;
+                return;
+            }
+        }
     }
 
     /**
-     * @brief            move one step toward the target, ant-style.
+     * @brief            Pack all landmark entries that have not yet been
+     *                   shared with a tower. Uses per-list indices
+     *                   (sharedAllyIdx etc.) to track the frontier between
+     *                   shared and unshared entries. All entries beyond the
+     *                   index are included regardless of their timestamp.
+     * @return           An int array of packed entries.
+     */
+    protected int[] buildSyncPayloadUnshared(){
+        sharedAllyIdx = Math.min(sharedAllyIdx, allyTowers.size());
+        sharedEnemyIdx = Math.min(sharedEnemyIdx, enemyTowers.size());
+        sharedRuinIdx = Math.min(sharedRuinIdx, ruins.size());
+        int n = (allyTowers.size() - sharedAllyIdx) +
+                (enemyTowers.size() - sharedEnemyIdx) +
+                (ruins.size() - sharedRuinIdx);
+        if(n <= 0) return new int[0];
+        int[] out = new int[n];
+        int i = 0;
+        for(int j = sharedAllyIdx; j < allyTowers.size(); j++)
+            out[i++] = packEntry(COORD_ALLY_TOWER, allyTowers.get(j));
+        for(int j = sharedEnemyIdx; j < enemyTowers.size(); j++)
+            out[i++] = packEntry(COORD_ENEMY_TOWER, enemyTowers.get(j));
+        for(int j = sharedRuinIdx; j < ruins.size(); j++)
+            out[i++] = packEntry(COORD_RUIN, ruins.get(j));
+        return out;
+    }
+
+    /**
+     * @brief            Finalize a completed sync exchange. Advances the
+     *                   shared-entry indices to the current list sizes so
+     *                   that those entries are not re-sent in the next sync,
+     *                   clears standstill, and delegates to Entity.endSync()
+     *                   to reset protocol state.
+     */
+    @Override
+    protected void endSync(){
+        sharedAllyIdx = allyTowers.size();
+        sharedEnemyIdx = enemyTowers.size();
+        sharedRuinIdx = ruins.size();
+        standstill = false;
+        super.endSync();
+    }
+
+    // ---- inline reporting to a nearby tower ----
+
+    /**
+     * @brief            Send one inline report (x111) per turn to the
+     *                   nearest ally tower, cycling through all known
+     *                   landmarks via reportCursor. Skipped when a sync
+     *                   is active. This provides low-latency, best-effort
+     *                   sharing without standstill.
+     * @throws GameActionException if sendMessage fails.
+     */
+    protected void reportToNearbyTower() throws GameActionException {
+        if(sync_phase != SYNC_IDLE) return;
+
+        int total = allyTowers.size() + enemyTowers.size() + ruins.size();
+        if(total == 0) return;
+
+        RobotInfo[] allies = rc.senseNearbyRobots(-1, rc.getTeam());
+        MapLocation towerLoc = null;
+        for(RobotInfo r : allies){
+            if(isTowerType(r.type)){ towerLoc = r.location; break; }
+        }
+        if(towerLoc == null) return;
+
+        reportCursor = reportCursor % total;
+        int type; MapLocation loc;
+        int idx = reportCursor;
+
+        if(idx < allyTowers.size()){
+            type = COORD_ALLY_TOWER; loc = allyTowers.get(idx);
+        } else {
+            idx -= allyTowers.size();
+            if(idx < enemyTowers.size()){
+                type = COORD_ENEMY_TOWER; loc = enemyTowers.get(idx);
+            } else {
+                idx -= enemyTowers.size();
+                type = COORD_RUIN; loc = ruins.get(idx);
+            }
+        }
+
+        int msg = buildInlineReport(type, loc.x, loc.y);
+        if(rc.canSendMessage(towerLoc, msg)){
+            rc.sendMessage(towerLoc, msg);
+            reportCursor++;
+        }
+    }
+
+    /**
+     * @brief            Move one step toward the target using an ant-style
+     *                   hybrid strategy.
      *
-     *                   the entity's map (populated by scan() and updateMap())
-     *                   is the knowledge base. BFS finds the shortest path
-     *                   through all known-passable tiles in the map.
+     *                   The entity's map (populated by scan() and
+     *                   updateMap()) is the knowledge base. BFS finds the
+     *                   shortest path through all known-passable tiles.
      *
-     *                   if BFS finds a path, follow it. when a step is blocked
-     *                   (e.g. by another bot), the fallback protocol
-     *                   (forward -> diag-right -> diag-left, rotate left 90 degrees,
-     *                   repeat) navigates around the obstacle, then the bot
-     *                   attempts to rejoin or replan.
+     *                   If BFS finds a path, follow it. When a step is
+     *                   blocked (e.g. by another bot), the fallback protocol
+     *                   (forward -> diag-right -> diag-left, rotate left
+     *                   90 degrees, repeat) navigates around the obstacle,
+     *                   then the bot attempts to rejoin or replan.
      *
-     *                   if no path can be planned (destination unseen, or
+     *                   If no path can be planned (destination unseen or
      *                   gaps in map knowledge), the bot explores with DFS
-     *                   toward the target. each turn, scan() reveals new
+     *                   toward the target. Each turn, scan() reveals new
      *                   terrain, and BFS is re-attempted so the bot switches
      *                   to an optimal route as soon as the map allows it.
-     * 
-     * @param target     the target location to move to.
-     * @throws GameActionException if the game action fails.
+     *
+     *                   Does nothing while standstill is active.
+     *
+     * @param target     The target location to move to.
+     * @throws GameActionException if a game action fails.
      */
     public void move_to(MapLocation target) throws GameActionException {
+        if (standstill) return;
+
         if (rc.getLocation().equals(target)) {
             resetPathState();
             return;
@@ -64,7 +249,6 @@ public class Robot extends Entity{
 
         if (count % 5 == 0) scan();
 
-        // every turn while exploring, re-attempt BFS on the (possibly refreshed) map
         if (exploring || plannedPath == null || plannedPath.isEmpty()) {
             LinkedList<MapLocation> path = bfs(rc.getLocation(), moveTarget);
             if (path != null) {
@@ -86,6 +270,11 @@ public class Robot extends Entity{
 
     // ---- path planning ----
 
+    /**
+     * @brief            Initialize the DFS exploration state. Clears
+     *                   previous visited/stack and marks the current
+     *                   location as visited.
+     */
     private void startExploring() {
         exploring = true;
         exploreVisited.clear();
@@ -95,6 +284,13 @@ public class Robot extends Entity{
 
     // ---- follow known path ----
 
+    /**
+     * @brief            Follow the next waypoint on the BFS-planned path.
+     *                   If the direct step is blocked, falls back to the
+     *                   wall-following protocol and attempts to rejoin or
+     *                   replan afterward.
+     * @throws GameActionException if a game action fails.
+     */
     private void followKnownPath() throws GameActionException {
         MapLocation next = plannedPath.peekFirst();
 
@@ -117,6 +313,13 @@ public class Robot extends Entity{
         }
     }
 
+    /**
+     * @brief            After a fallback move diverges from the planned
+     *                   path, attempt to rejoin it. If the current
+     *                   location lies on the existing path, skip ahead.
+     *                   Otherwise, re-run BFS or fall back to DFS
+     *                   exploration.
+     */
     private void rejoinOrReplan() {
         MapLocation cur = rc.getLocation();
 
@@ -137,8 +340,13 @@ public class Robot extends Entity{
     // ---- DFS exploration ----
 
     /**
-     * @brief            explore the map using DFS.
-     * @throws GameActionException if the game action fails.
+     * @brief            Explore the map using DFS biased toward the move
+     *                   target. Tries forward, diag-right, diag-left from
+     *                   the heading, then rotates left 90 degrees (x4).
+     *                   Only visits tiles not yet in exploreVisited.
+     *                   When stuck, backtracks via the exploreStack. As a
+     *                   last resort, force-moves in any available direction.
+     * @throws GameActionException if a game action fails.
      */
     private void explore() throws GameActionException {
         Direction dir = rc.getLocation().directionTo(moveTarget);
@@ -169,10 +377,13 @@ public class Robot extends Entity{
     }
 
     /**
-     * @brief            try to move in a given direction.
-     * @param d          the direction to move in.
-     * @return           true if the move was successful.
-     * @throws GameActionException if the game action fails.
+     * @brief            Attempt a DFS exploration move: only succeeds if
+     *                   the destination tile is reachable and has not been
+     *                   visited. Pushes the current location onto the
+     *                   backtrack stack on success.
+     * @param d          The direction to try.
+     * @return           true if the move was executed.
+     * @throws GameActionException if a game action fails.
      */
     private boolean tryExploreMove(Direction d) throws GameActionException {
         MapLocation next = rc.getLocation().add(d);
@@ -186,10 +397,12 @@ public class Robot extends Entity{
     }
 
     /**
-     * @brief            force move in a given direction.
-     * @param d          the direction to move in.
-     * @return           true if the move was successful.
-     * @throws GameActionException if the game action fails.
+     * @brief            Unconditionally move in a direction if possible,
+     *                   ignoring visited state. Used as a last-resort
+     *                   escape when DFS and backtracking both fail.
+     * @param d          The direction to try.
+     * @return           true if the move was executed.
+     * @throws GameActionException if a game action fails.
      */
     private boolean forceMove(Direction d) throws GameActionException {
         if (rc.canMove(d)) {
@@ -202,10 +415,13 @@ public class Robot extends Entity{
     // ---- fallback protocol ----
 
     /**
-     * @brief            try forward, diagonal-right, diagonal-left from the heading,
-     *                   then rotate left 90 degrees and repeat.
+     * @brief            Wall-following fallback when the planned step is
+     *                   blocked. Tries forward, diag-right, diag-left
+     *                   from the current heading, then rotates the heading
+     *                   left 90 degrees and repeats (up to 4 rotations).
+     * @param dir        The initial heading direction.
      * @return           true if a move was made.
-     * @throws GameActionException if the game action fails.
+     * @throws GameActionException if a game action fails.
      */
     private boolean fallbackMove(Direction dir) throws GameActionException {
         for (int i = 0; i < 4; i++) {
@@ -221,12 +437,14 @@ public class Robot extends Entity{
 
     /**
      * @brief            BFS over all known-passable tiles in the map.
-     *                   any two adjacent tiles that are both non-null and passable
-     *                   are implicitly connected -- no explicit edge recording needed.
-     *                   aborts early if bytecodes run low to stay within turn budget.
-     * @param start      the starting location.
-     * @param goal       the goal location.
-     * @return           ordered list of waypoints (excluding start), or null.
+     *                   Any two adjacent tiles that are both non-null and
+     *                   passable are implicitly connected. Aborts early
+     *                   if bytecodes run low (< 1500) to stay within the
+     *                   turn budget.
+     * @param start      The starting location.
+     * @param goal       The goal location.
+     * @return           Ordered list of waypoints (excluding start), or
+     *                   null if no path exists or budget ran out.
      */
     private LinkedList<MapLocation> bfs(MapLocation start, MapLocation goal) {
         if (goal.x < 0 || goal.x >= MAP_WIDTH || goal.y < 0 || goal.y >= MAP_HEIGHT) return null;
@@ -269,7 +487,8 @@ public class Robot extends Entity{
     }
 
     /**
-     * @brief            reset the path state.
+     * @brief            Clear all pathfinding state (target, planned path,
+     *                   DFS exploration visited set and backtrack stack).
      */
     private void resetPathState() {
         moveTarget = null;
@@ -278,5 +497,5 @@ public class Robot extends Entity{
         exploreVisited.clear();
         exploreStack.clear();
     }
-
+    
 }
