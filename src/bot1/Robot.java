@@ -1,15 +1,14 @@
 package bot1;
 
 import battlecode.common.*;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
 
 /**
  * @brief Mobile entity (Soldier, Mopper, Splasher).
- *        
+ *
  *        Current version:
- *        Handles pathfinding (BFS + DFS exploration with fallback protocol),
+ *        Handles pathfinding (A* + DFS exploration with fallback protocol),
  *        the initiator side of the two-way sync protocol with towers, and
  *        background inline reporting of known landmarks.
  */
@@ -31,6 +30,16 @@ public class Robot extends Entity{
     private int sharedRuinIdx = 0;
 
     private int reportCursor = 0;
+
+    // A* persistent arrays (allocated once, reused via generation counter)
+    private int pathGen = 0;
+    private int[] pathOpenGen;
+    private int[] pathClosedGen;
+    private int[] pathGCost;
+    private int[] pathParent;
+    private int[] pathHeapF;
+    private int[] pathHeapI;
+    private int pathHeapSize;
 
     /**
      * @brief            Constructor.
@@ -214,10 +223,12 @@ public class Robot extends Entity{
      *                   hybrid strategy.
      *
      *                   The entity's map (populated by scan() and
-     *                   updateMap()) is the knowledge base. BFS finds the
-     *                   shortest path through all known-passable tiles.
+     *                   updateMap()) is the knowledge base. A* (with
+     *                   Chebyshev heuristic) finds the shortest path through
+     *                   all known-passable tiles, expanding far fewer nodes
+     *                   than BFS to stay within bytecode limits.
      *
-     *                   If BFS finds a path, follow it. When a step is
+     *                   If A* finds a path, follow it. When a step is
      *                   blocked (e.g. by another bot), the fallback protocol
      *                   (forward -> diag-right -> diag-left, rotate left
      *                   90 degrees, repeat) navigates around the obstacle,
@@ -226,7 +237,7 @@ public class Robot extends Entity{
      *                   If no path can be planned (destination unseen or
      *                   gaps in map knowledge), the bot explores with DFS
      *                   toward the target. Each turn, scan() reveals new
-     *                   terrain, and BFS is re-attempted so the bot switches
+     *                   terrain, and A* is re-attempted so the bot switches
      *                   to an optimal route as soon as the map allows it.
      *
      *                   Does nothing while standstill is active.
@@ -250,7 +261,7 @@ public class Robot extends Entity{
         if (count % 5 == 0) scan();
 
         if (exploring || plannedPath == null || plannedPath.isEmpty()) {
-            LinkedList<MapLocation> path = bfs(rc.getLocation(), moveTarget);
+            LinkedList<MapLocation> path = astar(rc.getLocation(), moveTarget);
             if (path != null) {
                 plannedPath = path;
                 exploring = false;
@@ -317,7 +328,7 @@ public class Robot extends Entity{
      * @brief            After a fallback move diverges from the planned
      *                   path, attempt to rejoin it. If the current
      *                   location lies on the existing path, skip ahead.
-     *                   Otherwise, re-run BFS or fall back to DFS
+     *                   Otherwise, re-run A* or fall back to DFS
      *                   exploration.
      */
     private void rejoinOrReplan() {
@@ -329,7 +340,7 @@ public class Robot extends Entity{
             return;
         }
 
-        LinkedList<MapLocation> repath = bfs(cur, moveTarget);
+        LinkedList<MapLocation> repath = astar(cur, moveTarget);
         if (repath != null) {
             plannedPath = repath;
         } else {
@@ -433,12 +444,31 @@ public class Robot extends Entity{
         return false;
     }
 
-    // ---- BFS on the map knowledge base ----
+    // ---- A* on the map knowledge base ----
 
     /**
-     * @brief            BFS over all known-passable tiles in the map.
-     *                   Any two adjacent tiles that are both non-null and
-     *                   passable are implicitly connected. Aborts early
+     * @brief            Allocate the persistent A* arrays. Called once on
+     *                   the first astar() invocation. Cells are indexed as
+     *                   x * MAP_HEIGHT + y. Arrays are reused across calls
+     *                   via a generation counter (pathGen) so no per-call
+     *                   clearing is needed.
+     */
+    private void initPathArrays(){
+        int sz = MAP_WIDTH * MAP_HEIGHT;
+        pathOpenGen = new int[sz];
+        pathClosedGen = new int[sz];
+        pathGCost = new int[sz];
+        pathParent = new int[sz];
+        pathHeapF = new int[512];
+        pathHeapI = new int[512];
+    }
+
+    /**
+     * @brief            A* over all known-passable tiles in the map using
+     *                   Chebyshev distance as the heuristic (admissible for
+     *                   8-directional movement with uniform cost). Uses
+     *                   array-based data structures and a binary min-heap
+     *                   to minimize bytecode cost per node. Aborts early
      *                   if bytecodes run low (< 1500) to stay within the
      *                   turn budget.
      * @param start      The starting location.
@@ -446,44 +476,108 @@ public class Robot extends Entity{
      * @return           Ordered list of waypoints (excluding start), or
      *                   null if no path exists or budget ran out.
      */
-    private LinkedList<MapLocation> bfs(MapLocation start, MapLocation goal) {
-        if (goal.x < 0 || goal.x >= MAP_WIDTH || goal.y < 0 || goal.y >= MAP_HEIGHT) return null;
-        if (map[goal.x][goal.y] == null) return null;
-        if (!map[goal.x][goal.y].isPassable()) return null;
+    private LinkedList<MapLocation> astar(MapLocation start, MapLocation goal){
+        if(goal.x < 0 || goal.x >= MAP_WIDTH || goal.y < 0 || goal.y >= MAP_HEIGHT) return null;
+        if(map[goal.x][goal.y] == null || !map[goal.x][goal.y].isPassable()) return null;
 
-        HashSet<MapLocation> seen = new HashSet<>();
-        HashMap<MapLocation, MapLocation> parent = new HashMap<>();
-        LinkedList<MapLocation> queue = new LinkedList<>();
+        if(pathOpenGen == null) initPathArrays();
+        pathGen++;
 
-        seen.add(start);
-        queue.add(start);
+        int sx = start.x, sy = start.y, gx = goal.x, gy = goal.y;
+        int si = sx * MAP_HEIGHT + sy, gi = gx * MAP_HEIGHT + gy;
 
-        while (!queue.isEmpty()) {
-            if (Clock.getBytecodesLeft() < 1500) return null;
+        pathOpenGen[si] = pathGen;
+        pathGCost[si] = 0;
+        pathParent[si] = -1;
 
-            MapLocation cur = queue.poll();
-            if (cur.equals(goal)) {
+        pathHeapSize = 0;
+        heapPush(Math.max(Math.abs(gx - sx), Math.abs(gy - sy)), si);
+
+        while(pathHeapSize > 0){
+            if(Clock.getBytecodesLeft() < 1500) return null;
+
+            int ci = pathHeapI[0];
+            heapPop();
+
+            if(pathClosedGen[ci] == pathGen) continue;
+            pathClosedGen[ci] = pathGen;
+
+            if(ci == gi){
                 LinkedList<MapLocation> path = new LinkedList<>();
-                MapLocation step = goal;
-                while (!step.equals(start)) {
-                    path.addFirst(step);
-                    step = parent.get(step);
+                int pi = gi;
+                while(pi != si){
+                    path.addFirst(new MapLocation(pi / MAP_HEIGHT, pi % MAP_HEIGHT));
+                    pi = pathParent[pi];
                 }
                 return path;
             }
 
-            for (Direction d : directions) {
-                MapLocation nb = cur.add(d);
-                if (nb.x < 0 || nb.x >= MAP_WIDTH || nb.y < 0 || nb.y >= MAP_HEIGHT) continue;
-                if (map[nb.x][nb.y] == null) continue;
-                if (!map[nb.x][nb.y].isPassable()) continue;
-                if (seen.add(nb)) {
-                    parent.put(nb, cur);
-                    queue.add(nb);
+            int cx = ci / MAP_HEIGHT, cy = ci % MAP_HEIGHT;
+            int cg = pathGCost[ci];
+
+            for(Direction d : directions){
+                int nx = cx + d.dx, ny = cy + d.dy;
+                if(nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
+                if(map[nx][ny] == null || !map[nx][ny].isPassable()) continue;
+                int ni = nx * MAP_HEIGHT + ny;
+                if(pathClosedGen[ni] == pathGen) continue;
+
+                int ng = cg + 1;
+                if(pathOpenGen[ni] != pathGen || ng < pathGCost[ni]){
+                    pathOpenGen[ni] = pathGen;
+                    pathGCost[ni] = ng;
+                    pathParent[ni] = ci;
+                    heapPush(ng + Math.max(Math.abs(gx - nx), Math.abs(gy - ny)), ni);
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * @brief            Push an entry onto the A* binary min-heap.
+     *                   Grows the backing arrays if capacity is exceeded.
+     * @param f          The f-cost (g + h) of the node.
+     * @param idx        The map index (x * MAP_HEIGHT + y).
+     */
+    private void heapPush(int f, int idx){
+        if(pathHeapSize >= pathHeapF.length){
+            int nc = pathHeapF.length * 2;
+            int[] nf = new int[nc], ni = new int[nc];
+            System.arraycopy(pathHeapF, 0, nf, 0, pathHeapSize);
+            System.arraycopy(pathHeapI, 0, ni, 0, pathHeapSize);
+            pathHeapF = nf; pathHeapI = ni;
+        }
+        int pos = pathHeapSize++;
+        pathHeapF[pos] = f;
+        pathHeapI[pos] = idx;
+        while(pos > 0){
+            int par = (pos - 1) >>> 1;
+            if(pathHeapF[par] <= pathHeapF[pos]) break;
+            int tf = pathHeapF[par]; pathHeapF[par] = pathHeapF[pos]; pathHeapF[pos] = tf;
+            int ti = pathHeapI[par]; pathHeapI[par] = pathHeapI[pos]; pathHeapI[pos] = ti;
+            pos = par;
+        }
+    }
+
+    /**
+     * @brief            Pop the minimum entry from the A* binary min-heap.
+     *                   The caller reads pathHeapI[0] before calling this.
+     */
+    private void heapPop(){
+        pathHeapSize--;
+        pathHeapF[0] = pathHeapF[pathHeapSize];
+        pathHeapI[0] = pathHeapI[pathHeapSize];
+        int pos = 0;
+        while(true){
+            int left = (pos << 1) + 1, right = left + 1, sm = pos;
+            if(left < pathHeapSize && pathHeapF[left] < pathHeapF[sm]) sm = left;
+            if(right < pathHeapSize && pathHeapF[right] < pathHeapF[sm]) sm = right;
+            if(sm == pos) break;
+            int tf = pathHeapF[pos]; pathHeapF[pos] = pathHeapF[sm]; pathHeapF[sm] = tf;
+            int ti = pathHeapI[pos]; pathHeapI[pos] = pathHeapI[sm]; pathHeapI[sm] = ti;
+            pos = sm;
+        }
     }
 
     /**

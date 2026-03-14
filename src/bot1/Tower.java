@@ -147,28 +147,22 @@ public class Tower extends Entity {
      */
     @Override
     protected void onNewLandmark(int packedEntry){
-        pendingBroadcast.add(packedEntry);
+        if(pendingBroadcast != null) pendingBroadcast.add(packedEntry);
     }
 
     /**
-     * @brief            Send an inline report for each queued entry to
-     *                   every sensed ally tower. Best-effort: entries that
-     *                   fail canSendMessage are dropped (they will propagate
-     *                   via the next periodic tower-tower sync). Clears
-     *                   the queue after one pass.
-     * @throws GameActionException if sendMessage fails.
+     * @brief            Broadcast an inline report for each queued entry to
+     *                   all nearby entities using the tower's broadcastMessage
+     *                   API. Clears the queue after one pass.
+     * @throws GameActionException if broadcastMessage fails.
      */
     private void broadcastToTowers() throws GameActionException {
         if(pendingBroadcast.isEmpty()) return;
-        RobotInfo[] allies = rc.senseNearbyRobots(-1, rc.getTeam());
         for(int packed : pendingBroadcast){
             int type = entryType(packed);
             int x = entryX(packed), y = entryY(packed);
             int msg = buildInlineReport(type, x, y);
-            for(RobotInfo r : allies){
-                if(isTowerType(r.type) && rc.canSendMessage(r.location, msg))
-                    rc.sendMessage(r.location, msg);
-            }
+            if(rc.canBroadcastMessage()) rc.broadcastMessage(msg);
         }
         pendingBroadcast.clear();
     }
