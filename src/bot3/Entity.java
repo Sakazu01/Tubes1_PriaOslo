@@ -91,7 +91,6 @@ public abstract class Entity {
         MAP_HEIGHT = rc.getMapHeight();
         MAP_WIDTH = rc.getMapWidth();
         map = new MapInfo[MAP_WIDTH][MAP_HEIGHT];
-        try { init_map(); } catch(GameActionException e){}
 
         if(isTowerType(rc.getType())){
             allyTowers.add(rc.getLocation());
