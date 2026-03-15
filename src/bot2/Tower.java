@@ -5,7 +5,6 @@ import battlecode.common.*;
 public class Tower {
 
     static int totalSpawn = 0;
-    static int jmlSoldier = 0, jmlSplasher = 0, jmlMopper = 0;
 
     static void run() throws GameActionException {
         RobotController rc = Globals.rc;
@@ -22,32 +21,24 @@ public class Tower {
     }
 
     static void pilihDanSpawn() throws GameActionException {
-        int enemySoldiers = 0;
+        // kalau ada banyak musuh mendekat, spawn soldier terus
         for (RobotInfo e : Globals.enemies) {
             if (e.getType() == UnitType.SOLDIER
-                    && Globals.myLoc.distanceSquaredTo(e.getLocation()) <= 16)
-                enemySoldiers++;
-        }
-        if (enemySoldiers >= 2) {
-            spawnUnit(UnitType.SOLDIER);
-            return;
+                    && Globals.myLoc.distanceSquaredTo(e.getLocation()) <= 16) {
+                spawnUnit(UnitType.SOLDIER);
+                return;
+            }
         }
 
-        float rSoldier = totalSpawn > 0 ? (float) jmlSoldier / totalSpawn : 0;
-        float rMopper = totalSpawn > 0 ? (float) jmlMopper / totalSpawn : 0;
-
+        // pola spawn: 3 soldier di awal, lalu soldier-mopper-splasher-splasher berulang
         UnitType tipe;
-        if (totalSpawn == 0) {
-            tipe = UnitType.SOLDIER;
-        } else if (Globals.numTowers < 5 && Globals.round < 100 && rSoldier < 0.35f) {
-            // early game butuh soldier buat bangun tower
-            tipe = UnitType.SOLDIER;
-        } else if (rMopper < 0.15f) {
-            tipe = UnitType.MOPPER;
-        } else if (rSoldier < (Globals.numTowers >= 5 ? 0.10f : 0.15f)) {
+        if (totalSpawn < 3) {
             tipe = UnitType.SOLDIER;
         } else {
-            tipe = UnitType.SPLASHER;
+            int slot = (totalSpawn - 3) % 4;
+            if (slot == 0) tipe = UnitType.SOLDIER;
+            else if (slot == 1) tipe = UnitType.MOPPER;
+            else tipe = UnitType.SPLASHER;
         }
 
         spawnUnit(tipe);
@@ -59,9 +50,6 @@ public class Tower {
         if (lok != null && rc.canBuildRobot(tipe, lok)) {
             rc.buildRobot(tipe, lok);
             totalSpawn++;
-            if (tipe == UnitType.SOLDIER) jmlSoldier++;
-            else if (tipe == UnitType.SPLASHER) jmlSplasher++;
-            else jmlMopper++;
         }
     }
 
@@ -126,9 +114,5 @@ public class Tower {
             if (Globals.rc.canSendMessage(ally.getLocation(), msg))
                 Globals.rc.sendMessage(ally.getLocation(), msg);
         }
-    }
-
-    static int[] decodeMessage(int msg) {
-        return new int[]{ (msg >> 12) & 0xF, (msg >> 6) & 0x3F, msg & 0x3F };
     }
 }

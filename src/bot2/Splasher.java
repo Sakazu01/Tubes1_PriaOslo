@@ -4,9 +4,6 @@ import battlecode.common.*;
 
 public class Splasher {
 
-    static MapLocation rushTarget = null;
-    static int rushAge = 0;
-
     static void run() throws GameActionException {
         if (Globals.rc.isActionReady()) aksi();
         gerak();
@@ -15,8 +12,9 @@ public class Splasher {
 
     static void aksi() throws GameActionException {
         RobotController rc = Globals.rc;
-        if (!rc.isActionReady() || Globals.paint < 50) return;
+        if (!rc.isActionReady()) return;
 
+        // cari posisi splash terbaik — utamakan cat musuh, terutama yang dekat ruin
         MapLocation bestCenter = null;
         int bestSkor = 1;
 
@@ -62,77 +60,32 @@ public class Splasher {
         RobotController rc = Globals.rc;
         if (!rc.isMovementReady()) return;
 
-        MapLocation target = null;
-        int best = -1;
-
-        int urgency = Math.max(0, (150 - Globals.paint) * 20);
-        if (urgency > best) {
+        // refuel
+        if (Globals.paint < 80) {
             MapLocation tower = Globals.nearestPaintTower(Globals.myLoc);
             if (tower == null) tower = Globals.nearestAllyTower(Globals.myLoc);
-            if (tower != null) {
-                int s = urgency - Globals.myLoc.distanceSquaredTo(tower);
-                if (s > best) { best = s; target = tower; }
-            }
+            if (tower != null) { Navigation.pathTo(tower); return; }
         }
 
-        // kalo nemu banyak cat musuh, serbu langsung
-        if (Globals.paint >= 100) {
-            int enemyTiles = 0;
-            MapLocation enemyCenter = null;
-            for (MapInfo info : Globals.nearby) {
-                if (Navigation.isEnemyPaint(info.getPaint())) {
-                    enemyTiles++;
-                    enemyCenter = info.getMapLocation();
-                }
-            }
-            if (enemyTiles >= 5 && enemyCenter != null) {
-                rushTarget = enemyCenter;
-                rushAge = 0;
-            }
+        // kejar area cat musuh terdekat
+        MapLocation enemyArea = null;
+        int ed = Integer.MAX_VALUE;
+        for (MapInfo info : Globals.nearby) {
+            if (!Navigation.isEnemyPaint(info.getPaint())) continue;
+            int d = Globals.myLoc.distanceSquaredTo(info.getMapLocation());
+            if (d < ed) { ed = d; enemyArea = info.getMapLocation(); }
+        }
+        if (enemyArea != null) { Navigation.pathTo(enemyArea); return; }
+
+        // kejar tower musuh (bukan defense)
+        for (RobotInfo e : Globals.enemies) {
+            if (!Globals.isTowerType(e.getType()) || Globals.isDefenseTower(e.getType())) continue;
+            int dist = Globals.myLoc.distanceSquaredTo(e.getLocation());
+            if (dist > 13) Navigation.moveToward(e.getLocation());
+            else if (dist <= 9) Navigation.retreatFrom(e.getLocation());
+            return;
         }
 
-        if (rushTarget != null) {
-            rushAge++;
-            if (rushAge > 15) rushTarget = null;
-            else {
-                int s = 5000 - Globals.myLoc.distanceSquaredTo(rushTarget);
-                if (s > best) { best = s; target = rushTarget; }
-            }
-        }
-
-        if (Globals.paint >= 50) {
-            for (MapInfo info : Globals.nearby) {
-                if (!Navigation.isEnemyPaint(info.getPaint())) continue;
-                int s = 4000 - Globals.myLoc.distanceSquaredTo(info.getMapLocation());
-                if (s > best) { best = s; target = info.getMapLocation(); }
-            }
-        }
-
-        if (Globals.paint >= 100 && rc.getHealth() > 50) {
-            for (RobotInfo e : Globals.enemies) {
-                if (!Globals.isTowerType(e.getType()) || Globals.isDefenseTower(e.getType())) continue;
-                int s = 2000 - Globals.myLoc.distanceSquaredTo(e.getLocation());
-                if (s > best) { best = s; target = e.getLocation(); }
-            }
-        }
-
-        if (target != null) {
-            boolean targetTower = false;
-            for (RobotInfo e : Globals.enemies) {
-                if (Globals.isTowerType(e.getType()) && e.getLocation().equals(target)) {
-                    targetTower = true;
-                    break;
-                }
-            }
-            if (targetTower) {
-                int dist = Globals.myLoc.distanceSquaredTo(target);
-                if (dist > 13) Navigation.moveToward(target);
-                else if (dist <= 9) Navigation.retreatFrom(target);
-            } else {
-                Navigation.pathTo(target);
-            }
-        } else {
-            Navigation.moveExpansion();
-        }
+        Navigation.moveExpansion();
     }
 }

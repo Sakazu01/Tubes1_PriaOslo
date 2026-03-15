@@ -18,19 +18,17 @@ public class Mopper {
         if (!rc.isActionReady()) return;
 
         // kasih paint ke soldier yang butuh
-        if (Globals.paint > 40) {
-            for (RobotInfo ally : Globals.allies) {
-                if (ally.getType() != UnitType.SOLDIER) continue;
-                if (ally.getPaintAmount() >= 30) continue;
-                MapLocation allyLoc = ally.getLocation();
-                if (Globals.myLoc.distanceSquaredTo(allyLoc) <= 2
-                        && rc.canTransferPaint(allyLoc, 25)) {
-                    rc.transferPaint(allyLoc, 25);
-                    return;
-                }
+        for (RobotInfo ally : Globals.allies) {
+            if (ally.getType() != UnitType.SOLDIER) continue;
+            if (ally.getPaintAmount() > 20) continue;
+            MapLocation allyLoc = ally.getLocation();
+            if (rc.canTransferPaint(allyLoc, 25)) {
+                rc.transferPaint(allyLoc, 25);
+                return;
             }
         }
 
+        // swing ke arah yang kena paling banyak musuh
         Direction[] cardinal = { Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST };
         Direction swingDir = null;
         int swingCount = 0;
@@ -48,6 +46,7 @@ public class Mopper {
         }
         if (swingDir != null) { rc.mopSwing(swingDir); return; }
 
+        // serang musuh terdekat dalam jangkauan
         RobotInfo targetMop = null;
         int lowestHP = Integer.MAX_VALUE;
         for (RobotInfo e : Globals.enemies) {
@@ -60,121 +59,81 @@ public class Mopper {
             return;
         }
 
-        MapLocation bersihRuin = null;
-        int bd = Integer.MAX_VALUE;
+        // bersihkan cat musuh dekat ruin
         for (MapInfo info : Globals.nearby) {
             if (!Navigation.isEnemyPaint(info.getPaint())) continue;
             MapLocation loc = info.getMapLocation();
             if (Globals.myLoc.distanceSquaredTo(loc) > 2) continue;
             for (int i = 0; i < Globals.numRuins; i++) {
                 if (loc.distanceSquaredTo(Globals.ruins[i]) <= 12) {
-                    int d = Globals.myLoc.distanceSquaredTo(loc);
-                    if (d < bd) { bd = d; bersihRuin = loc; }
+                    if (rc.canAttack(loc)) { rc.attack(loc); return; }
                     break;
                 }
             }
         }
-        if (bersihRuin != null && rc.canAttack(bersihRuin)) { rc.attack(bersihRuin); return; }
 
-        MapLocation bersih = null;
-        bd = Integer.MAX_VALUE;
+        // bersihkan cat musuh umum
         for (MapInfo info : Globals.nearby) {
             if (!Navigation.isEnemyPaint(info.getPaint())) continue;
             MapLocation loc = info.getMapLocation();
             if (Globals.myLoc.distanceSquaredTo(loc) > 2) continue;
-            int d = Globals.myLoc.distanceSquaredTo(loc);
-            if (d < bd) { bd = d; bersih = loc; }
+            if (rc.canAttack(loc)) { rc.attack(loc); return; }
         }
-        if (bersih != null && rc.canAttack(bersih)) rc.attack(bersih);
     }
 
     static void gerak() throws GameActionException {
         RobotController rc = Globals.rc;
         if (!rc.isMovementReady()) return;
 
-        MapLocation target = null;
-        int best = -1;
-
-        int urgency = Math.max(0, (30 - Globals.paint) * 30);
-        if (urgency > best) {
+        // refuel
+        if (Globals.paint < 20) {
             MapLocation tower = Globals.nearestPaintTower(Globals.myLoc);
             if (tower == null) tower = Globals.nearestAllyTower(Globals.myLoc);
-            if (tower != null) {
-                int s = urgency - Globals.myLoc.distanceSquaredTo(tower);
-                if (s > best) { best = s; target = tower; }
-            }
+            if (tower != null) { gerakHindariMusuh(tower); return; }
         }
 
-        // deketin soldier yang mau kehabisan paint
-        if (Globals.paint > 40) {
-            for (RobotInfo ally : Globals.allies) {
-                if (ally.getType() != UnitType.SOLDIER) continue;
-                if (ally.getPaintAmount() >= 30) continue;
-                int s = 4000 - Globals.myLoc.distanceSquaredTo(ally.getLocation());
-                if (s > best) { best = s; target = ally.getLocation(); }
-            }
-        }
-
+        // kejar musuh non-tower
         for (RobotInfo e : Globals.enemies) {
             if (Globals.isTowerType(e.getType())) continue;
-            int s = 3000 - Globals.myLoc.distanceSquaredTo(e.getLocation());
-            if (s > best) { best = s; target = e.getLocation(); }
+            gerakHindariMusuh(e.getLocation());
+            return;
         }
 
-        if (best < 2000) {
-            outer:
-            for (MapInfo info : Globals.nearby) {
-                if (!Navigation.isEnemyPaint(info.getPaint())) continue;
-                MapLocation loc = info.getMapLocation();
-                for (int i = 0; i < Globals.numRuins; i++) {
-                    if (loc.distanceSquaredTo(Globals.ruins[i]) <= 12) {
-                        int s = 2000 - Globals.myLoc.distanceSquaredTo(loc);
-                        if (s > best) { best = s; target = loc; }
-                        continue outer;
-                    }
+        // bersihkan cat musuh dekat ruin
+        for (MapInfo info : Globals.nearby) {
+            if (!Navigation.isEnemyPaint(info.getPaint())) continue;
+            MapLocation loc = info.getMapLocation();
+            for (int i = 0; i < Globals.numRuins; i++) {
+                if (loc.distanceSquaredTo(Globals.ruins[i]) <= 12) {
+                    gerakHindariMusuh(loc);
+                    return;
                 }
             }
         }
 
-        if (best < 1000) {
-            for (MapInfo info : Globals.nearby) {
-                if (!Navigation.isEnemyPaint(info.getPaint())) continue;
-                int s = 1000 - Globals.myLoc.distanceSquaredTo(info.getMapLocation());
-                if (s > best) { best = s; target = info.getMapLocation(); }
-            }
+        // ikutin soldier terdekat
+        for (RobotInfo ally : Globals.allies) {
+            if (ally.getType() != UnitType.SOLDIER) continue;
+            gerakHindariMusuh(ally.getLocation());
+            return;
         }
 
-        if (target == null) {
-            // kalo ga ada kerjaan, ikutin soldier terdekat
-            RobotInfo nearestSoldier = null;
-            int nd = Integer.MAX_VALUE;
-            for (RobotInfo ally : Globals.allies) {
-                if (ally.getType() != UnitType.SOLDIER) continue;
-                int d = Globals.myLoc.distanceSquaredTo(ally.getLocation());
-                if (d < nd) { nd = d; nearestSoldier = ally; }
+        // explore
+        if (exploreTarget == null || Globals.myLoc.distanceSquaredTo(exploreTarget) <= 4) {
+            idleCount++;
+            if (idleCount > 10) {
+                Globals.symType = (Globals.symType + 1) % 3;
+                idleCount = 0;
             }
-            if (nearestSoldier != null) {
-                target = nearestSoldier.getLocation();
-            } else {
-                if (exploreTarget == null || Globals.myLoc.distanceSquaredTo(exploreTarget) <= 4) {
-                    idleCount++;
-                    if (idleCount > 15) {
-                        Globals.symType = (Globals.symType + 1) % 3;
-                        idleCount = 0;
-                    }
-                    MapLocation mt = Globals.firstMoneyTower();
-                    if (mt != null)
-                        exploreTarget = Globals.predictEnemy(mt);
-                    else
-                        exploreTarget = new MapLocation(
-                            Globals.rng.nextInt(Globals.mapW),
-                            Globals.rng.nextInt(Globals.mapH));
-                }
-                target = exploreTarget;
-            }
+            MapLocation mt = Globals.firstMoneyTower();
+            if (mt != null)
+                exploreTarget = Globals.predictEnemy(mt);
+            else
+                exploreTarget = new MapLocation(
+                    Globals.rng.nextInt(Globals.mapW),
+                    Globals.rng.nextInt(Globals.mapH));
         }
-
-        gerakHindariMusuh(target);
+        gerakHindariMusuh(exploreTarget);
     }
 
     static void gerakHindariMusuh(MapLocation target) throws GameActionException {
