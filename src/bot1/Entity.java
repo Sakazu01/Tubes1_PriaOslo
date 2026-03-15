@@ -45,6 +45,8 @@ public abstract class Entity {
     // ---- sync state ----
 
     static final int SYNC_THRESHOLD = 50;
+    /** @brief Maximum rounds a sync exchange may last before being aborted. */
+    static final int SYNC_TIMEOUT = 20;
     protected int last_sync = 0;
 
     // I = initiator, R = responder, H = header, D = sending data, RECV = receiving data
@@ -68,12 +70,14 @@ public abstract class Entity {
     protected int sync_cursor = 0;
     protected int sync_remaining = 0;
     protected int sync_partner_last_sync = 0;
+    /** @brief Round the current sync exchange started (for timeout). */
+    protected int sync_start_round = 0;
 
     // ---- constructor ----
 
     /**
      * @brief            Construct an entity, initialize the map grid, and
-     *                   perform the first scan.  If this entity is a tower,
+     *                   perform the first scan. If this entity is a tower,
      *                   its own location is registered as a known ally tower.
      * @param rc         The RobotController for this entity.
      */
@@ -164,7 +168,7 @@ public abstract class Entity {
 
     /**
      * @brief            Register a landmark coordinate with a discovery
-     *                   timestamp.  Deduplicates against existing entries.
+     *                   timestamp. Deduplicates against existing entries.
      *                   Incoming info is treated as current truth: adding
      *                   an ally tower removes any enemy tower or ruin at
      *                   that location (and vice-versa for enemy towers).
@@ -220,11 +224,11 @@ public abstract class Entity {
 
     /**
      * @brief            Detect ally and enemy towers within vision range
-     *                   and register them as landmarks.  After registering
+     *                   and register them as landmarks. After registering
      *                   visible towers, checks all previously known tower
      *                   locations that fall inside vision range: if a known
      *                   tower is no longer visible, it is downgraded to a
-     *                   COORD_RUIN (tower was destroyed).  Called at the
+     *                   COORD_RUIN (tower was destroyed). Called at the
      *                   end of scan().
      * @throws GameActionException if senseNearbyRobots fails.
      */
@@ -305,6 +309,12 @@ public abstract class Entity {
     static boolean isStandstill(int msg)      { return ((msg >>> 28) & 0x7) == 0x4; }
     /** @brief Test for resume command (x000). */
     static boolean isResume(int msg)          { return ((msg >>> 28) & 0x7) == 0x0; }
+    /** @brief Test for gank command (x001). */
+    static boolean isGank(int msg)            { return ((msg >>> 28) & 0x7) == 0x1; }
+    /** @brief Extract gank target x from a gank message. */
+    static int parseGankX(int msg) { return (msg >>> 22) & 0x3F; }
+    /** @brief Extract gank target y from a gank message. */
+    static int parseGankY(int msg) { return (msg >>> 16) & 0x3F; }
 
     /**
      * @brief            Extract the 12-bit last_sync_time from a sync time
@@ -384,6 +394,20 @@ public abstract class Entity {
      * @return           The assembled 32-bit message.
      */
     int buildResumeMsg(){ return isTower() ? 0 : (1 << 31); }
+
+    /**
+     * @brief            Build a gank command: x001 | x(6) | y(6) | spare(16).
+     * @param x          Target x-coordinate (0-63).
+     * @param y          Target y-coordinate (0-63).
+     * @return           The assembled 32-bit message.
+     */
+    int buildGankMsg(int x, int y){
+        int msg = isTower() ? 0 : (1 << 31);
+        msg |= (0x1 << 28);
+        msg |= (x & 0x3F) << 22;
+        msg |= (y & 0x3F) << 16;
+        return msg;
+    }
 
     // ---- entry packing ----
 

@@ -24,6 +24,11 @@ public class Robot extends Entity{
 
     protected boolean standstill = false;
 
+    // gank state
+    protected MapLocation gankTarget = null;
+    protected int gankExpiry = 0;
+    static final int GANK_DURATION = 75;
+
     // tracks which entries have been shared with a tower via sync
     private int sharedAllyIdx = 0;
     private int sharedEnemyIdx = 0;
@@ -64,15 +69,20 @@ public class Robot extends Entity{
         if(count % 5 == 0) scan();
 
         if(sync_phase != SYNC_IDLE){
-            handleSyncSend();
+            if(rc.getRoundNum() - sync_start_round > SYNC_TIMEOUT
+                    || !rc.canSenseRobot(sync_partner_id)){
+                endSync();
+            } else {
+                handleSyncSend();
+            }
         } else {
             if(!standstill) tryInitSync();
             if(!standstill) reportToNearbyTower();
         }
 
-        move_to(new MapLocation(15,10));
-
-        Clock.yield();
+        if(gankTarget != null && rc.getRoundNum() > gankExpiry){
+            gankTarget = null;
+        }
     }
 
     // ---- message handling ----
@@ -81,6 +91,7 @@ public class Robot extends Entity{
      * @brief            Read all pending messages and dispatch them.
      *                   During an active sync, partner messages are routed
      *                   to handleSyncMessage().  Otherwise:
+     *                   - Gank (x001): sets gankTarget and gankExpiry.
      *                   - Standstill (x100): sets standstill flag.
      *                   - Resume (x000): clears standstill (when idle).
      *                   - Inline report (x111): stored via receiveInlineReport().
@@ -95,6 +106,14 @@ public class Robot extends Entity{
                 continue;
             }
 
+            if(isGank(data)){
+                int gx = parseGankX(data), gy = parseGankY(data);
+                if(gx < MAP_WIDTH && gy < MAP_HEIGHT){
+                    gankTarget = new MapLocation(gx, gy);
+                    gankExpiry = rc.getRoundNum() + GANK_DURATION;
+                }
+                continue;
+            }
             if(isStandstill(data)){ standstill = true; continue; }
             if(isResume(data) && sync_phase == SYNC_IDLE){ standstill = false; continue; }
             if(isInlineReport(data)){ receiveInlineReport(data); continue; }
@@ -123,6 +142,7 @@ public class Robot extends Entity{
                 sync_initiator = true;
                 sync_cursor = 0;
                 sync_phase = SYNC_I_H1;
+                sync_start_round = rc.getRoundNum();
                 standstill = true;
                 return;
             }
@@ -436,7 +456,7 @@ public class Robot extends Entity{
      */
     private boolean fallbackMove(Direction dir) throws GameActionException {
         for (int i = 0; i < 4; i++) {
-            if (rc.canMove(dir))               { rc.move(dir);              return true; }
+            if (rc.canMove(dir))               { rc.move(dir);               return true; }
             if (rc.canMove(dir.rotateRight())) { rc.move(dir.rotateRight()); return true; }
             if (rc.canMove(dir.rotateLeft()))  { rc.move(dir.rotateLeft());  return true; }
             dir = dir.rotateLeft().rotateLeft();
@@ -591,5 +611,28 @@ public class Robot extends Entity{
         exploreVisited.clear();
         exploreStack.clear();
     }
-    
+
+    // ---- paint management ----
+
+    /**
+     * @brief            Check whether this robot's paint is below 50% capacity.
+     * @return           true if the robot should return to a tower for resupply.
+     */
+    protected boolean shouldReturnForPaint(){
+        return rc.getPaint() < 50;
+    }
+
+    /**
+     * @brief            Find the nearest known ally tower.
+     * @return           The MapLocation of the closest tower, or null if none known.
+     */
+    protected MapLocation findNearestAllyTower(){
+        MapLocation best = null;
+        int bestDist = Integer.MAX_VALUE;
+        for(MapLocation t : allyTowers){
+            int d = rc.getLocation().distanceSquaredTo(t);
+            if(d < bestDist){ bestDist = d; best = t; }
+        }
+        return best;
+    }
 }
