@@ -1,53 +1,80 @@
-# Battlecode 2025 Scaffold - Java
+# Tubes 1 - PriaOslo
+# Bot utama - bot1
+# Bot alternatif - bot2, bot4
 
-This is the Battlecode 2025 Java scaffold, containing an `examplefuncsplayer`. Read https://play.battlecode.org/bc25java/quick_start !
+**Tugas Besar 1 IF2211 Strategi Algoritma**  
+Semester II Tahun 2025/2026  
 
+Pemanfaatan Algoritma Greedy dalam pembuatan bot permainan Battlecode 2025.
 
-### Project Structure
+---
 
-- `README.md`
-    This file.
-- `build.gradle`
-    The Gradle build file used to build and run players.
-- `src/`
-    Player source code.
-- `test/`
-    Player test code.
-- `client/`
-    Contains the client. The proper executable can be found in this folder (don't move this!)
-- `build/`
-    Contains compiled player code and other artifacts of the build process. Can be safely ignored.
-- `matches/`
-    The output folder for match files.
-- `maps/`
-    The default folder for custom maps.
-- `gradlew`, `gradlew.bat`
-    The Unix (OS X/Linux) and Windows versions, respectively, of the Gradle wrapper. These are nifty scripts that you can execute in a terminal to run the Gradle build tasks of this project. If you aren't planning to do command line development, these can be safely ignored.
-- `gradle/`
-    Contains files used by the Gradle wrapper scripts. Can be safely ignored.
+## Deskripsi Proyek
 
-### How to get started
+Proyek ini merupakan tugas kelompok untuk mata kuliah Strategi Algoritma. Tim mengimplementasikan tiga bot dengan strategi greedy yang berbeda, masing-masing menggunakan heuristic yang berbeda pula, dengan tujuan memenangkan permainan Battlecode 2025 (mewarnai >70% peta atau menghancurkan semua unit lawan).
 
-You are free to directly edit `examplefuncsplayer`.
-However, we recommend you make a new bot by copying `examplefuncsplayer` to a new package under the `src` folder.
+---
 
-### Useful Commands
+## Algoritma Greedy yang Diimplementasikan
 
-- `./gradlew build`
-    Compiles your player
-- `./gradlew run`
-    Runs a game with the settings in gradle.properties
-- `./gradlew update`
-    Update configurations for the latest version -- run this often
-- `./gradlew zipForSubmit`
-    Create a submittable zip file
-- `./gradlew tasks`
-    See what else you can do!
+### Bot Utama (bot1)
 
+**Strategi:** Greedy berbasis prioritas aksi dan koordinasi tim.
 
-### Configuration 
+- **Heuristic:** Urutan prioritas tetap: (1) combat jika ada menara musuh dekat, (2) gank menara musuh jika target sudah ditetapkan, (3) kembali ke menara sekutu jika cat rendah, (4) idle: eksplorasi, mewarnai, dan membangun menara di reruntuhan.
+- **Fungsi seleksi:** Memilih aksi dengan prioritas tertinggi yang layak (feasible). Untuk membangun menara, memilih reruntuhan terdekat dan menggilir tipe menara (Paint -> Money -> Defense).
+- **Koordinasi:** Menara mengirim perintah gank saat cukup robot sekutu idle; robot memilih menara musuh terdekat sebagai target.
 
-Look at `gradle.properties` for project-wide configuration.
+### Bot Alternatif 1 (bot2)
 
-If you are having any problems with the default client, please report to teh devs and
-feel free to set the `compatibilityClient` configuration to `true` to download a different version of the client.
+**Strategi:** Greedy eksplorasi kuadran dan klaim reruntuhan.
+
+- **Heuristic:** Setiap robot diberi kuadran peta berbeda (berdasarkan ID) untuk mendistribusikan eksplorasi. Robot memilih reruntuhan terdekat yang belum diklaim, lalu memilih petak pola menara yang belum selesai dengan jarak terkecil.
+- **Fungsi seleksi:** Memilih reruntuhan terdekat yang feasible; memilih petak dalam radius 3 dengan jarak terkecil untuk diwarnai; menggilir tipe menara (Money → Paint → Defense).
+
+### Bot Alternatif 2 (bot4)
+
+**Strategi:** Greedy reruntuhan terdekat dengan fokus menara cat.
+
+- **Heuristic:** Robot selalu menarget reruntuhan terdekat. Hanya membangun menara cat (Paint Tower) untuk memaksimalkan produksi cat dan ekspansi wilayah.
+- **Fungsi seleksi:** Memilih reruntuhan terdekat; memilih petak pola yang belum selesai dengan jarak terkecil; fokus pada satu reruntuhan sampai selesai.
+
+---
+
+## Struktur Proyek
+
+```
+Tubes1_PriaOslo/
+├── src/
+│   ├── bot1/          # Bot utama
+│   ├── bot2/          # Bot alternatif 1
+│   ├── bot4/          # Bot alternatif 2
+│   └── examplefuncsplayer/
+├── doc/
+│   └── laporan.pdf
+├── client/            # Aplikasi client Battlecode
+├── maps/              # Peta permainan
+├── matches/           # Output pertandingan
+├── build.gradle
+└── README.md
+```
+
+---
+
+## Author
+
+| Nama                  | NIM      |
+|-----------------------|----------|
+| Muhammad Iqbal Raihan | 13524011 |
+| Mahmudia Kimdaro Amin | 13524083 |
+| Ariel C Sitorus       | 13524085 |
+
+**Kelompok:** PriaOslo
+
+---
+
+## Referensi
+
+- [Battlecode 2025](https://battlecode.org/)
+- [Battlecode 2025 Java Quick Start](https://play.battlecode.org/bc25java/quick_start)
+- [Battlecode 2025 API Javadoc](https://releases.battlecode.org/javadoc/battlecode25/3.1.0/battlecode/common/package-summary.html)
