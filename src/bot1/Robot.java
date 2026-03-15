@@ -27,7 +27,7 @@ public class Robot extends Entity{
     // gank state
     protected MapLocation gankTarget = null;
     protected int gankExpiry = 0;
-    static final int GANK_DURATION = 75;
+    static final int GANK_DURATION = 40;
 
     // tracks which entries have been shared with a tower via sync
     private int sharedAllyIdx = 0;
@@ -619,7 +619,7 @@ public class Robot extends Entity{
      * @return           true if the robot should return to a tower for resupply.
      */
     protected boolean shouldReturnForPaint(){
-        return rc.getPaint() < 50;
+        return rc.getPaint() < 20;
     }
 
     /**

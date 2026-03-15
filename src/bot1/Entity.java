@@ -30,7 +30,7 @@ public abstract class Entity {
         Direction.WEST,
         Direction.NORTHWEST,
     };
-
+    
     // ---- coordinate knowledge base (with timestamps) ----
 
     ArrayList<MapLocation> allyTowers = new ArrayList<>();
@@ -44,9 +44,9 @@ public abstract class Entity {
 
     // ---- sync state ----
 
-    static final int SYNC_THRESHOLD = 50;
+    static final int SYNC_THRESHOLD = 80;
     /** @brief Maximum rounds a sync exchange may last before being aborted. */
-    static final int SYNC_TIMEOUT = 20;
+    static final int SYNC_TIMEOUT = 10;
     protected int last_sync = 0;
 
     // I = initiator, R = responder, H = header, D = sending data, RECV = receiving data

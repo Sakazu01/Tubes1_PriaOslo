@@ -17,16 +17,16 @@ public class Mopper extends Robot {
     // ---- constants ----
 
     /** @brief Ally paint amount at or below which help is offered. */
-    private static final int DEPLETED_PAINT_THRESHOLD = 10;
+    private static final int DEPLETED_PAINT_THRESHOLD = 20;
 
     /** @brief Amount of paint transferred to a depleted ally. */
-    private static final int HELP_TRANSFER_AMOUNT = 20;
+    private static final int HELP_TRANSFER_AMOUNT = 30;
 
     /** @brief Minimum own paint to attempt courier delivery. */
-    private static final int COURIER_MIN_PAINT = 100;
+    private static final int COURIER_MIN_PAINT = 80;
 
     /** @brief Amount of paint delivered to a non-paint tower. */
-    private static final int COURIER_TRANSFER_AMOUNT = 50;
+    private static final int COURIER_TRANSFER_AMOUNT = 40;
 
     /** @brief Squared distance threshold to pick a new explore target. */
     private static final int EXPLORE_ARRIVAL_DIST_SQ = 8;
