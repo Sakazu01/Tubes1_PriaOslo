@@ -1,7 +1,14 @@
 package bot1;
 
-import battlecode.common.*;
 import java.util.ArrayList;
+
+import battlecode.common.Direction;
+import battlecode.common.GameActionException;
+import battlecode.common.MapLocation;
+import battlecode.common.Message;
+import battlecode.common.RobotController;
+import battlecode.common.RobotInfo;
+import battlecode.common.UnitType;
 
 /**
  * @brief Stationary tower entity.
@@ -21,7 +28,7 @@ public class Tower extends Entity {
     static final int MONEY_THRESHOLD = 1000;
 
     /** @brief Minimum turns between consecutive spawns. */
-    static final int SPAWN_COOLDOWN = 15;
+    static final int SPAWN_COOLDOWN = 2;
 
     /** @brief Minimum turns between consecutive gank broadcasts. */
     static final int GANK_COOLDOWN = 60;
