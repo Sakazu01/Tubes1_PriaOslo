@@ -13,28 +13,39 @@ import battlecode.common.UnitType;
 /**
  * @brief Stationary tower entity.
  *
- *        Current version:
  *        Acts as a coordination hub: receives intel from robots via sync
  *        or inline reports, relays new entries to all nearby entities via
  *        broadcastMessage, attacks enemies in range, issues gank commands
  *        when enough ally robots are idle and an enemy tower is known, and
  *        spawns robots (Soldier -> Mopper -> Splasher cycle).
+ *
+ *        Bytecode-guarded: every non-critical operation checks remaining
+ *        bytecodes before running. trySpawn and attackEnemies always run
+ *        first and are cheap.  Heavy operations (sync, scan, gank) are
+ *        skipped when the budget is low so that OTHER towers on the same
+ *        team still get their share of the bytecode pool.
  */
 public class Tower extends Entity {
 
     // ---- constants ----
 
     /** @brief Minimum team money required before spawning a robot. */
-    static final int MONEY_THRESHOLD = 1000;
+    static final int MONEY_THRESHOLD = 300;
 
-    /** @brief Minimum turns between consecutive spawns. */
-    static final int SPAWN_COOLDOWN = 2;
+    /** @brief Minimum turns between consecutive spawns (0 = game-native cooldown only). */
+    static final int SPAWN_COOLDOWN = 0;
 
     /** @brief Minimum turns between consecutive gank broadcasts. */
-    static final int GANK_COOLDOWN = 60;
+    static final int GANK_COOLDOWN = 40;
 
     /** @brief Minimum ally robots in vision to trigger a gank. */
-    static final int GANK_ALLY_THRESHOLD = 4;
+    static final int GANK_ALLY_THRESHOLD = 2;
+
+    /** @brief How often (in turns) to run the lightweight landmark scan. */
+    static final int SCAN_INTERVAL = 25;
+
+    /** @brief Bytecode floor: skip non-essential work when remaining bytecodes drop below this. */
+    static final int BYTECODE_RESERVE = 3000;
 
     // ---- state ----
 
@@ -50,6 +61,10 @@ public class Tower extends Entity {
     private MapLocation lastGankTarget = null;
     private int lastGankRound = -GANK_COOLDOWN;
 
+    // Per-turn cached sense results (lazy: null until first use).
+    private RobotInfo[] cachedAllies;
+    private RobotInfo[] cachedEnemies;
+
     /**
      * @brief            Constructor.
      * @param rc         The RobotController for this tower.
@@ -61,52 +76,143 @@ public class Tower extends Entity {
     }
 
     /**
-     * @brief            Main turn loop. Processes messages, scans every
-     *                   10 turns, drives sync/broadcast, attacks enemies,
-     *                   evaluates gank conditions, and spawns a robot if
-     *                   funds and cooldown allow.
+     * @brief            Towers don't pathfind, so skip the expensive
+     *                   full-grid initialisation that Entity.init_map()
+     *                   performs. Only run a lightweight landmark scan.
+     */
+    @Override
+    public void init_map() throws GameActionException {
+        scanLandmarks();
+    }
+
+    /**
+     * @brief            Check whether the tower has enough bytecodes left
+     *                   to keep doing non-essential work.
+     * @return           true if bytecodes remaining < BYTECODE_RESERVE.
+     */
+    private boolean lowOnBytecodes(){
+        return Clock.getBytecodesLeft() < BYTECODE_RESERVE;
+    }
+
+    /**
+     * @brief            Lazily fetch and cache nearby ally robots.
+     * @return           The cached array (empty if sensing fails).
+     */
+    private RobotInfo[] getAllies() throws GameActionException {
+        if(cachedAllies == null)
+            cachedAllies = rc.senseNearbyRobots(-1, rc.getTeam());
+        return cachedAllies;
+    }
+
+    /**
+     * @brief            Lazily fetch and cache nearby enemy robots.
+     * @return           The cached array (empty if sensing fails).
+     */
+    private RobotInfo[] getEnemies() throws GameActionException {
+        if(cachedEnemies == null)
+            cachedEnemies = rc.senseNearbyRobots(-1, rc.getTeam().opponent());
+        return cachedEnemies;
+    }
+
+    /**
+     * @brief            Lightweight scan for towers: detect nearby ally
+     *                   and enemy towers and ruins without iterating
+     *                   every visible tile into the map grid.
+     * @throws GameActionException if sensing fails.
+     */
+    private void scanLandmarks() throws GameActionException {
+        int now = rc.getRoundNum();
+
+        MapLocation[] nearbyRuins = rc.senseNearbyRuins(-1);
+        for(MapLocation r : nearbyRuins){
+            addLandmark(COORD_RUIN, r, now);
+            if(lowOnBytecodes()) return;
+        }
+
+        RobotInfo[] allies = getAllies();
+        RobotInfo[] enemies = getEnemies();
+
+        ArrayList<MapLocation> seenAlly = new ArrayList<>();
+        ArrayList<MapLocation> seenEnemy = new ArrayList<>();
+
+        for(RobotInfo r : allies)
+            if(isTowerType(r.type)){
+                addLandmark(COORD_ALLY_TOWER, r.location, now);
+                seenAlly.add(r.location);
+            }
+        for(RobotInfo r : enemies)
+            if(isTowerType(r.type)){
+                addLandmark(COORD_ENEMY_TOWER, r.location, now);
+                seenEnemy.add(r.location);
+            }
+
+        if(lowOnBytecodes()) return;
+
+        ArrayList<MapLocation> destroyed = new ArrayList<>();
+        for(MapLocation loc : allyTowers)
+            if(rc.canSenseLocation(loc) && !seenAlly.contains(loc))
+                destroyed.add(loc);
+        for(MapLocation loc : enemyTowers)
+            if(rc.canSenseLocation(loc) && !seenEnemy.contains(loc))
+                destroyed.add(loc);
+        for(MapLocation loc : destroyed){
+            allyTowers.remove(loc);
+            enemyTowers.remove(loc);
+            addLandmark(COORD_RUIN, loc, now);
+        }
+    }
+
+    /**
+     * @brief            Main turn loop.  Critical actions (spawn, attack)
+     *                   run unconditionally at the top.  Every subsequent
+     *                   operation is guarded by a bytecode check so that
+     *                   heavy work (sync, scan, broadcast, gank) is shed
+     *                   when the budget runs low, leaving bytecodes for
+     *                   other towers on the team.
      * @throws GameActionException if a game action fails.
      */
     @Override
     public void run() throws GameActionException {
         count++;
 
-        processMessages();
-        if(count % 10 == 0) scan();
+        // --- critical: always run ---
+        trySpawn();
+        attackEnemies();
 
-        if(sync_phase != SYNC_IDLE){
-            if(rc.getRoundNum() - sync_start_round > SYNC_TIMEOUT){
-                endSync();
-            } else {
-                updateSyncTarget();
-                handleSyncSend();
+        // --- non-essential: shed under pressure ---
+        if(!lowOnBytecodes()) processMessages();
+        if(!lowOnBytecodes() && count % SCAN_INTERVAL == 0) scanLandmarks();
+
+        if(!lowOnBytecodes()){
+            if(sync_phase != SYNC_IDLE){
+                if(rc.getRoundNum() - sync_start_round > SYNC_TIMEOUT){
+                    endSync();
+                } else {
+                    updateSyncTarget();
+                    handleSyncSend();
+                }
+            } else if(shouldInitSync()){
+                trySyncWithNearbyTower();
             }
-        } else if(shouldInitSync()){
-            trySyncWithNearbyTower();
         }
 
-        broadcastToTowers();
-        attackEnemies();
-        tryGank();
-        trySpawn();
+        if(!lowOnBytecodes()) broadcastToTowers();
+        if(!lowOnBytecodes()) tryGank();
+
+        cachedAllies = null;
+        cachedEnemies = null;
     }
 
     // ---- message handling ----
 
     /**
      * @brief            Read all pending messages and dispatch them.
-     *                   During an active sync, partner messages go to
-     *                   handleSyncMessage(). Otherwise:
-     *                   - Gank (x001): re-broadcast to propagate, store
-     *                     target and round (de-duped by lastGankTarget).
-     *                   - SyncTimeHeader (x110,bit27=0): starts the
-     *                     responder sync flow.
-     *                   - InlineReport (x111): stored via
-     *                     receiveInlineReport().
+     *                   Bails out early if bytecodes run low mid-loop.
      */
     private void processMessages(){
         Message[] messages = rc.readMessages(-1);
         for(Message m : messages){
+            if(lowOnBytecodes()) break;
             int data = m.getBytes();
 
             if(sync_phase != SYNC_IDLE && m.getSenderID() == sync_partner_id){
@@ -153,13 +259,11 @@ public class Tower extends Entity {
 
     /**
      * @brief            Attempt to start a two-way sync with the nearest
-     *                   ally tower. Sends all known landmarks (unfiltered)
-     *                   since the initiator does not know the partner's
-     *                   last_sync before the exchange begins.
+     *                   ally tower.  Uses the lazy-cached allies array.
      * @throws GameActionException if senseNearbyRobots fails.
      */
     private void trySyncWithNearbyTower() throws GameActionException {
-        RobotInfo[] allies = rc.senseNearbyRobots(-1, rc.getTeam());
+        RobotInfo[] allies = getAllies();
         for(RobotInfo r : allies){
             if(isTowerType(r.type)){
                 sync_payload = buildSyncPayloadAll();
@@ -178,7 +282,7 @@ public class Tower extends Entity {
 
     /**
      * @brief            Hook called by addLandmark() for every genuinely
-     *                   new landmark. Queues the packed entry for
+     *                   new landmark.  Queues the packed entry for
      *                   broadcast on this turn.
      * @param packedEntry The 14-bit packed entry (type + x + y).
      */
@@ -190,12 +294,14 @@ public class Tower extends Entity {
     /**
      * @brief            Broadcast an inline report for each queued entry
      *                   to all nearby entities via broadcastMessage.
-     *                   Clears the queue after one pass.
+     *                   Clears the queue after one pass.  Bails early
+     *                   if bytecodes run low.
      * @throws GameActionException if broadcastMessage fails.
      */
     private void broadcastToTowers() throws GameActionException {
         if(pendingBroadcast.isEmpty()) return;
         for(int packed : pendingBroadcast){
+            if(lowOnBytecodes()) break;
             int type = entryType(packed);
             int x = entryX(packed), y = entryY(packed);
             int msg = buildInlineReport(type, x, y);
@@ -207,11 +313,12 @@ public class Tower extends Entity {
     // ---- combat ----
 
     /**
-     * @brief            Attack the first enemy robot sensed within range.
+     * @brief            Attack the first enemy sensed within range.
+     *                   Uses the lazy-cached enemies array.
      * @throws GameActionException if attack fails.
      */
     private void attackEnemies() throws GameActionException {
-        RobotInfo[] enemies = rc.senseNearbyRobots(-1, rc.getTeam().opponent());
+        RobotInfo[] enemies = getEnemies();
         for(RobotInfo e : enemies){
             if(rc.canAttack(e.location)){
                 rc.attack(e.location);
@@ -224,14 +331,7 @@ public class Tower extends Entity {
 
     /**
      * @brief            Evaluate gank conditions and broadcast a gank
-     *                   command if met. Conditions:
-     *                   - Sync is idle.
-     *                   - At least one enemy tower is known.
-     *                   - GANK_COOLDOWN rounds have elapsed.
-     *                   - At least GANK_ALLY_THRESHOLD ally robots are
-     *                     visible.
-     *                   The closest known enemy tower is chosen as the
-     *                   gank target.
+     *                   command if met.  Uses the lazy-cached allies.
      * @throws GameActionException if broadcastMessage fails.
      */
     private void tryGank() throws GameActionException {
@@ -239,7 +339,7 @@ public class Tower extends Entity {
         if(enemyTowers.isEmpty()) return;
         if(rc.getRoundNum() - lastGankRound < GANK_COOLDOWN) return;
 
-        RobotInfo[] allies = rc.senseNearbyRobots(-1, rc.getTeam());
+        RobotInfo[] allies = getAllies();
         int robotCount = 0;
         for(RobotInfo a : allies){
             if(!isTowerType(a.type)) robotCount++;
@@ -265,9 +365,9 @@ public class Tower extends Entity {
 
     /**
      * @brief            Spawn a robot if money exceeds MONEY_THRESHOLD
-     *                   and SPAWN_COOLDOWN has elapsed. Cycles through
-     *                   Soldier -> Mopper -> Splasher, placing in the
-     *                   first available adjacent tile.
+     *                   and SPAWN_COOLDOWN has elapsed.  Called first in
+     *                   run() — no bytecode guard needed since this is
+     *                   the highest priority action.
      * @throws GameActionException if buildRobot fails.
      */
     private void trySpawn() throws GameActionException {
@@ -288,10 +388,8 @@ public class Tower extends Entity {
     // ---- sync helpers ----
 
     /**
-     * @brief            Refresh sync_target_loc for mobile partners
-     *                   (robots) whose location may change between turns.
-     *                   If the partner moved out of sensing range, the
-     *                   sync is aborted via endSync().
+     * @brief            Refresh sync_target_loc for mobile partners.
+     *                   If the partner is out of sensing range, abort.
      */
     private void updateSyncTarget(){
         if(sync_partner_id < 0) return;
