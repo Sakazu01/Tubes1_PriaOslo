@@ -1,4 +1,4 @@
-package greedymax;
+package bot2;
 
 import battlecode.common.*;
 import java.util.Random;
