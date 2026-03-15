@@ -32,7 +32,7 @@ public class Tower extends Entity {
     static final int GANK_COOLDOWN = 40;
 
     /** @brief Minimum ally robots in vision to trigger a gank. */
-    static final int GANK_ALLY_THRESHOLD = 3;
+    static final int GANK_ALLY_THRESHOLD = 2;
 
     /** @brief How often (in turns) to run the lightweight landmark scan. */
     static final int SCAN_INTERVAL = 25;
