@@ -26,6 +26,9 @@ public class Soldier extends Robot {
     /** @brief Squared distance threshold to pick a new explore target. */
     private static final int EXPLORE_ARRIVAL_DIST_SQ = 8;
 
+    /** @brief Paint level at which a soldier ignores resupply and keeps fighting. */
+    private static final int AGGRO_PAINT_FLOOR = 10;
+
     // ---- state ----
 
     private MapLocation currentRuin = null;
@@ -57,18 +60,54 @@ public class Soldier extends Robot {
         super.run();
 
         if(!standstill && sync_phase == SYNC_IDLE){
-            if(shouldReturnForPaint()){
+            MapLocation nearbyEnemy = senseEnemyTower();
+            if(nearbyEnemy != null){
+                handleCombat(nearbyEnemy);
+            } else if(gankTarget != null){
+                handleGank();
+            } else if(shouldReturnForPaint()){
                 MapLocation tower = findNearestAllyTower();
                 if(tower != null) move_to(tower);
                 else explore();
-            } else if(gankTarget != null){
-                handleGank();
             } else {
                 idleBehavior();
             }
         }
 
         Clock.yield();
+    }
+
+    // ---- combat ----
+
+    /**
+     * @brief            Sense for the nearest enemy tower in vision.
+     * @return           The MapLocation of the closest enemy tower, or null.
+     * @throws GameActionException if sensing fails.
+     */
+    private MapLocation senseEnemyTower() throws GameActionException {
+        RobotInfo[] enemies = rc.senseNearbyRobots(-1, rc.getTeam().opponent());
+        MapLocation best = null;
+        int bestDist = Integer.MAX_VALUE;
+        for(RobotInfo e : enemies){
+            if(isTowerType(e.type)){
+                int d = rc.getLocation().distanceSquaredTo(e.location);
+                if(d < bestDist){ bestDist = d; best = e.location; }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * @brief            Engage an enemy tower: move toward it and attack.
+     *                   Soldiers deal 50 structure damage per attack.
+     *                   Skips paint-return logic while a tower is in sight.
+     * @param target     Location of the enemy tower.
+     * @throws GameActionException if a game action fails.
+     */
+    private void handleCombat(MapLocation target) throws GameActionException {
+        if(rc.canAttack(target)) rc.attack(target, false);
+        move_to(target);
+        if(rc.canAttack(target)) rc.attack(target, false);
     }
 
     // ---- idle behavior ----
@@ -211,12 +250,12 @@ public class Soldier extends Robot {
     /**
      * @brief            Move toward the gank target (enemy tower) and
      *                   attack its tile to deal structure damage.
+     *                   Attacks before and after moving to maximise DPS.
      * @throws GameActionException if a game action fails.
      */
     private void handleGank() throws GameActionException {
+        if(rc.canAttack(gankTarget)) rc.attack(gankTarget, false);
         move_to(gankTarget);
-        if(rc.canAttack(gankTarget)){
-            rc.attack(gankTarget, false);
-        }
+        if(rc.canAttack(gankTarget)) rc.attack(gankTarget, false);
     }
 }

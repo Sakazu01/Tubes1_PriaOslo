@@ -21,7 +21,7 @@ public class Splasher extends Robot {
     private static final int SCORE_EMPTY = 2;
 
     /** @brief Score awarded to an enemy-painted tile. */
-    private static final int SCORE_ENEMY = 3;
+    private static final int SCORE_ENEMY = 5;
 
     /** @brief Squared distance threshold to pick a new explore target. */
     private static final int EXPLORE_ARRIVAL_DIST_SQ = 8;
