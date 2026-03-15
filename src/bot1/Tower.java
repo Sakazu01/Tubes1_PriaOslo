@@ -1,7 +1,14 @@
 package bot1;
 
-import battlecode.common.*;
 import java.util.ArrayList;
+
+import battlecode.common.Direction;
+import battlecode.common.GameActionException;
+import battlecode.common.MapLocation;
+import battlecode.common.Message;
+import battlecode.common.RobotController;
+import battlecode.common.RobotInfo;
+import battlecode.common.UnitType;
 
 /**
  * @brief Stationary tower entity.
