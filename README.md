@@ -11,6 +11,12 @@ This is the Battlecode 2025 Java scaffold, containing an `examplefuncsplayer`. R
     The Gradle build file used to build and run players.
 - `src/`
     Player source code.
+    - `src/main_bot/`
+        Bot utama (bot1).
+    - `src/alternative_bots_1/`
+        Bot alternatif 1 (bot2).
+    - `src/alternative_bots_2/`
+        Bot alternatif 2 (bot4).
 - `test/`
     Player test code.
 - `client/`
