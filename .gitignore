@@ -1,4 +1,8 @@
-###### GRADLE ######
+# BATTLECODE 
+
+matches/
+*.bc25
+
 
 .gradle
 **/build/
